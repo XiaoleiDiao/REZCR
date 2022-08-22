@@ -9,7 +9,7 @@ import shutil
 from os.path import join
 from os import listdir
 
-sets=[('2007', 'train'), ('2007', 'val'), ('2007', 'test')]
+sets=[('2022', 'train'), ('2022', 'val'), ('2022', 'test')]
 
 classes = ['004', '008', '012', '026', '027', '030', '062', '063', '094',
            '104', '111', '123', '132', '134', '149', '154', '162', '164',
@@ -22,13 +22,13 @@ classes = ['004', '008', '012', '026', '027', '030', '062', '063', '094',
 class_s = ['1_Single', '2_UD', '3_LR', '4_Triangle', '5_S', '6_Multiple']
 
 
-path_img = "F:\oracle\yolo3-pytorch-radical-test\VOCdevkit\VOC2007\Image_SR"
-path_ann = "F:\oracle\yolo3-pytorch-radical-test\VOCdevkit\VOC2007\Annotation_SR"
+path_img = "F:\oracle\REZCR\VOCdevkit\OracleRC2022\Image_SR"
+path_ann = "F:\oracle\REZCR\VOCdevkit\OracleRC2022\Annotation_SR"
 dirs_img = listdir(path_img)
 dirs_ann = listdir(path_ann)
 
 def convert_annotation(image_id, list_file):
-    in_file = open('VOCdevkit/VOC2007/Annotations/%s.xml'%(image_id), encoding='utf-8')
+    in_file = open('OracleRC2022/Annotations/%s.xml'%(image_id), encoding='utf-8')
     tree=ET.parse(in_file)
     root = tree.getroot()
     # print("in_file", in_file)
@@ -64,7 +64,7 @@ for folder in dirs_ann:
         image_id = xml[:-4]
         print("xml_path", image_id)
 
-        list_file.write('%s/VOCdevkit/VOC2007/Image_SR/%s/%s.jpg'%(wd,class_SR,image_id))
+        list_file.write('%s/OracleRC2022/Image_SR/%s/%s.jpg'%(wd,class_SR,image_id))
         list_file.write(" " + str(class_SR))
         convert_annotation(image_id, list_file)
         list_file.write('\n')
@@ -75,12 +75,3 @@ list_file.close()
 
 
 
-
-# for year, image_set in sets:
-#     image_ids = open('VOCdevkit/VOC%s/ImageSets/Main/%s.txt'%(year, image_set)).read().strip().split()
-    # list_file = open('%s_%s.txt'%(year, image_set), 'w')
-    # for image_id in image_ids:
-    #     list_file.write('%s/VOCdevkit/VOC%s/JPEGImages/%s/%s.jpg'%(wd, year,class_SR ,image_id))
-    #     convert_annotation(year, image_id, list_file)
-    #     list_file.write('\n')
-    # list_file.close()
