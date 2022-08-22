@@ -1,7 +1,5 @@
 #---------------------------------------------#
-#   运行前一定要修改classes
-#   如果生成的2007_train.txt里面没有目标信息
-#   那么就是因为classes没有设定正确
+#   generate radical_train.txt
 #---------------------------------------------#
 import xml.etree.ElementTree as ET
 from os import getcwd
