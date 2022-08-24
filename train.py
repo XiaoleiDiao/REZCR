@@ -16,6 +16,14 @@ from nets.RIE import RIEBody
 from nets.radical_loss import RadicalLoss
 from utils.config import Config
 from utils.dataloader import RadicalDataset, radical_dataset_collate
+from DNN_printer import DNN_printer
+import wandb
+
+# 输出的validation log内容不完整
+# 注释不完整，格式不高级
+# DNN_printer
+# wandb
+# class 重新写
 
 
 def get_lr(optimizer):
@@ -23,59 +31,132 @@ def get_lr(optimizer):
         return param_group['lr']
 
 
-def fit_ont_epoch(net, R_losses, epoch, epoch_size, epoch_size_val, dataloader, dataloader_val, Epoch):
+def fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, dataloader, dataloader_val, Epoch):
     total_loss = 0
     val_loss = 0
+    correct_s = torch.zeros(1).squeeze().cuda()
+    total = torch.zeros(1).squeeze().cuda()
 
+    #####   Training   #####
     net.train()
     with tqdm(total=epoch_size, desc=f'Epoch {epoch + 1}/{Epoch}', postfix=dict, mininterval=0.3) as pbar:
         for iteration, batch in enumerate(dataloader):
             if iteration >= epoch_size:
                 break
-            images, targets = batch[0], batch[1]
+
+            ##### Model Inputs: inputs and targets #####
+            images, target_SR, targets = batch[0], batch[1], batch[2]
+            # print("images", images.shape)
+            # print("target_SR", len(target_SR))
+            # print("targets", len(targets))
+
+
 
             with torch.no_grad():
                 images = Variable(torch.from_numpy(images).type(torch.FloatTensor)).cuda()
                 targets = [Variable(torch.from_numpy(ann).type(torch.FloatTensor)) for ann in targets]
+                target_SR_tensor = Variable(torch.from_numpy(np.array(target_SR)).type(torch.LongTensor)).squeeze().cuda()
+                # target_SR_tensor = target_SR_tensor_1.reshape(8)
+                # target_SR_tensor = torch.Tensor(target_SR).to(device)
+                # print("images", images.shape)
+                # print("targets", len(targets))
+                # print("target_SR_tensor_train", target_SR_tensor.shape)
 
             optimizer.zero_grad()
-            outputs = net(images)
+            output_r, output_s = net(images)
+            # print("output_r", output_r.shape)
+            # print("output_s", output_s.shape)
 
-            loss = R_losses(outputs, targets)
-            loss.backward()
+            # Radical Losses
+            loss = R_losses(output_r, targets)
+
+            # Structural Relation Losses
+            s_loss = S_loss(output_s, target_SR_tensor)
+
+            # total Losses
+            loss_all = loss+s_loss
+
+            loss_all.backward()
             optimizer.step()
 
-            total_loss += loss.item()
+            total_loss += loss_all.item()
+
+            # --------------
+            #  Log Progress
+            # --------------
+            ##### Print log #####
             pbar.set_postfix(**{'total_loss': total_loss / (iteration + 1),
                                 'lr': get_lr(optimizer)})
             pbar.update(1)
 
+            # calculate accuracy
+            prediction = torch.argmax(output_s, 1)
+            # print("prediction",prediction)
+            # print("target_SR_tensor", target_SR_tensor)
+            correct_s += (prediction == target_SR_tensor).sum().float()
+            total += len(target_SR)
+        print('Train_Accuracy_s: %f' % ((correct_s / total).cpu().detach().data.numpy()))
+
+
+    #####   Validation    #####
     net.eval()
     print('Start Validation')
+    correct_s_val = torch.zeros(1).squeeze().cuda()
+    total_val = torch.zeros(1).squeeze().cuda()
+
     with tqdm(total=epoch_size_val, desc=f'Epoch {epoch + 1}/{Epoch}', postfix=dict, mininterval=0.3) as pbar:
         for iteration, batch in enumerate(dataloader_val):
             if iteration >= epoch_size_val:
                 break
-            images_val, targets_val = batch[0], batch[1]
+
+            ##### Model Inputs: inputs and targets #####
+            images, target_SR_val, targets_val = batch[0], batch[1], batch[2]
+            # print("images", images.shape)
+            # print("target_SR", len(target_SR_val))
+            # print("targets", len(targets_val))
+
 
             with torch.no_grad():
-                images_val = Variable(torch.from_numpy(images_val).type(torch.FloatTensor)).cuda()
+                images_val = Variable(torch.from_numpy(images).type(torch.FloatTensor)).cuda()
                 targets_val = [Variable(torch.from_numpy(ann).type(torch.FloatTensor)) for ann in targets_val]
+                target_SR_val_tensor = Variable(torch.from_numpy(np.array(target_SR_val)).type(torch.LongTensor)).squeeze().cuda()
+                # print("target_SR_val_tensor", target_SR_val_tensor.shape)
 
             optimizer.zero_grad()
-            outputs = net(images_val)
+            output_r, output_s = net(images_val)
 
-            loss = R_losses(outputs, targets_val)
-            loss.backward()
+            # Radical Losses
+            loss = R_losses(output_r, targets_val)
+
+            # Structural Relation Losses
+            s_loss = S_loss(output_s, target_SR_val_tensor)
+
+            # total Losses
+            loss_all = loss+s_loss
+
+            loss_all.backward()
             optimizer.step()
 
-            val_loss += loss.item()
+            val_loss += loss_all.item()
+
+
+            ##### Log Progress
+            # Print log
             pbar.set_postfix(**{'total_loss': val_loss / (iteration + 1)})
             pbar.update(1)
+
+            # calculate accuracy
+            prediction = torch.argmax(output_s, 1)
+            correct_s_val += (prediction == target_SR_val_tensor).sum().float()
+            total_val += len(target_SR_val_tensor)
+    # acc_str = 'Accuracy: %f' % ((correct_s / total).cpu().detach().data.numpy())
+
     print('Finish Validation')
     print('Epoch:' + str(epoch + 1) + '/' + str(Epoch))
     print('Total Loss: %.4f || Val Loss: %.4f ' % (total_loss / (epoch_size + 1), val_loss / (epoch_size_val + 1)))
+    print('Accuracy_s: %f' % ((correct_s_val / total_val).cpu().detach().data.numpy()))
 
+    ##### Save model checkpoints #####
     if epoch % 20 == 0:
         print('Saving state, iter:', str(epoch + 1))
         torch.save(model.state_dict(), 'logs/Epoch%d-Total_Loss%.4f-Val_Loss%.4f.pth' % (
@@ -89,8 +170,6 @@ def avg(value_list):
     for val in value_list:
         num += val
     return num / length
-
-
 def temp_monitor():
     w = wmi.WMI(namespace="root\\OpenHardwareMonitor")
     sensors = w.Sensor()
@@ -114,15 +193,18 @@ def temp_monitor():
 
 if __name__ == "__main__":
 
+    ##### Determine CUDA #####
     Cuda = True
     normalize = False
 
+    ##### Initialize models #####
     model = RIEBody(Config)
+
+    # load pre-trained models
     model_path = "model_data/pretrained_weights.pth"
     print('Loading weights into state dict...')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_dict = model.state_dict()
-
     # pretrained_dict = torch.load(model_path, map_location=device)
     # pretrained_dict = {k: v for k, v in pretrained_dict.items() if np.shape(model_dict[k]) == np.shape(v)}
     # model_dict.update(pretrained_dict)
@@ -136,10 +218,25 @@ if __name__ == "__main__":
         cudnn.benchmark = True
         net = net.cuda()
 
-    # set loss
-    R_losses = RadicalLoss(np.reshape(Config["RIE"]["anchors"], [-1, 2]), Config["RIE"]["classes"], (Config["img_w"], Config["img_h"]), Cuda, normalize)
 
-    annotation_path = '2007_train.txt'
+    #####  set parameters #####
+    lr = 1e-3
+    Batch_size = 8
+    Init_Epoch = 0
+    Freeze_Epoch = 100
+
+    #####  set loss #####
+    R_losses = RadicalLoss(np.reshape(Config["RIE"]["anchors"], [-1, 2]), Config["RIE"]["classes"], (Config["img_w"], Config["img_h"]), Cuda, normalize)
+    S_loss = torch.nn.CrossEntropyLoss()
+    # print("s_loss",s_loss)
+
+    ##### Define Optimizers #####
+    optimizer = optim.Adam(net.parameters(), lr)
+    lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.92)
+
+    ##### Configure Dataloaders #####
+    # get images' path and annotations
+    annotation_path = 'radical_train.txt'
 
     val_split = 0.1
     with open(annotation_path) as f:
@@ -151,24 +248,22 @@ if __name__ == "__main__":
     num_val = int(len(lines) * val_split)
     num_train = len(lines) - num_val
 
-    lr = 1e-3
-    Batch_size = 8
-    Init_Epoch = 0
-    Freeze_Epoch = 50
 
-    optimizer = optim.Adam(net.parameters(), lr)
-    lr_scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=1, gamma=0.92)
-
+    ##### Configure Dataloaders #####
+    # training data
     train_dataset = RadicalDataset(lines[:num_train], (Config["img_h"], Config["img_w"]), True)
-    val_dataset = RadicalDataset(lines[num_train:], (Config["img_h"], Config["img_w"]), False)
-
-    dataloader = DataLoader(train_dataset, shuffle=True, batch_size=Batch_size, num_workers=4, pin_memory=True,
+    dataloader = DataLoader(train_dataset, shuffle=False, batch_size=Batch_size, num_workers=4, pin_memory=True,
                             drop_last=True, collate_fn=radical_dataset_collate)
+
+    # validating data
+    val_dataset = RadicalDataset(lines[num_train:], (Config["img_h"], Config["img_w"]), False)
     dataloader_val = DataLoader(val_dataset, shuffle=True, batch_size=Batch_size, num_workers=4, pin_memory=True,
                                 drop_last=True, collate_fn=radical_dataset_collate)
 
     epoch_size = num_train // Batch_size
     epoch_size_val = num_val // Batch_size
+
+
     # ------------------------------------#
     # Start training
     # ------------------------------------#
@@ -176,33 +271,8 @@ if __name__ == "__main__":
         param.requires_grad = True   # Do not freeze training
 
     for epoch in range(Init_Epoch, Freeze_Epoch):
-        fit_ont_epoch(net, R_losses, epoch, epoch_size, epoch_size_val, dataloader, dataloader_val, Freeze_Epoch)
+        fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, dataloader, dataloader_val, Freeze_Epoch)
         lr_scheduler.step()
         temp_monitor()
 
-    # if True:
-    #     lr = 1e-4
-    #     Batch_size = 4
-    #     Freeze_Epoch = 50
-    #     Unfreeze_Epoch = 102
-    #     optimizer = optim.Adam(net.parameters(),lr)
-    #     lr_scheduler = optim.lr_scheduler.StepLR(optimizer,step_size=1,gamma=0.92)
-    #
-    #     train_dataset = RadicalDataset(lines[:num_train], (Config["img_h"], Config["img_w"]), True)
-    #     val_dataset = RadicalDataset(lines[num_train:], (Config["img_h"], Config["img_w"]), False)
-    #     gen = DataLoader(train_dataset, shuffle=True, batch_size=Batch_size, num_workers=4, pin_memory=True,
-    #                                 drop_last=True, collate_fn=radical_dataset_collate)
-    #     gen_val = DataLoader(val_dataset, shuffle=True, batch_size=Batch_size, num_workers=4,pin_memory=True,
-    #                                 drop_last=True, collate_fn=radical_dataset_collate)
-    #
-    #
-    #     epoch_size = num_train//Batch_size
-    #     epoch_size_val = num_val//Batch_size
-
-    #     for param in model.backbone.parameters():
-    #         param.requires_grad = True
-    #
-    #     for epoch in range(Freeze_Epoch,Unfreeze_Epoch):
-    #         fit_ont_epoch(net,R_losses,epoch,epoch_size,epoch_size_val,gen,gen_val,Unfreeze_Epoch,Cuda)
-    #         lr_scheduler.step()
-    #         # temp_monitor()
+       
