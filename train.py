@@ -1,3 +1,7 @@
+# -------------------------------------#
+#     Train model
+# -------------------------------------#
+
 import os
 import time
 
@@ -246,3 +250,5 @@ if __name__ == "__main__":
         fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, dataloader, dataloader_val, All_Epoch)
         lr_scheduler.step()
         temp_monitor()
+
+        
