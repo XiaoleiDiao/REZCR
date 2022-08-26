@@ -1,5 +1,8 @@
-# KGR
-# reasoning characters in character knowledge graph via radical predictions and structural relation predictions
+# -----------------------------------------------------------------------#
+#    KGR
+#    Reasoning characters in character knowledge graph
+#    via radical predictions and structural relation predictions
+# -----------------------------------------------------------------------#
 
 
 import pandas
@@ -185,5 +188,4 @@ if __name__ == '__main__':
         p = Character_candidate[i][1]
         character = dic_character_name.get(c)
         print("TOP5-",i, character, p)
-        
-        
+
