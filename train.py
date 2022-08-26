@@ -19,11 +19,6 @@ from utils.dataloader import RadicalDataset, radical_dataset_collate
 from DNN_printer import DNN_printer
 import wandb
 
-# 输出的validation log内容不完整
-# 注释不完整，格式不高级
-# DNN_printer
-# wandb
-# class 重新写
 
 
 def get_lr(optimizer):
@@ -46,26 +41,14 @@ def fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, data
 
             ##### Model Inputs: inputs and targets #####
             images, target_SR, targets = batch[0], batch[1], batch[2]
-            # print("images", images.shape)
-            # print("target_SR", len(target_SR))
-            # print("targets", len(targets))
-
-
 
             with torch.no_grad():
                 images = Variable(torch.from_numpy(images).type(torch.FloatTensor)).cuda()
                 targets = [Variable(torch.from_numpy(ann).type(torch.FloatTensor)) for ann in targets]
                 target_SR_tensor = Variable(torch.from_numpy(np.array(target_SR)).type(torch.LongTensor)).squeeze().cuda()
-                # target_SR_tensor = target_SR_tensor_1.reshape(8)
-                # target_SR_tensor = torch.Tensor(target_SR).to(device)
-                # print("images", images.shape)
-                # print("targets", len(targets))
-                # print("target_SR_tensor_train", target_SR_tensor.shape)
 
             optimizer.zero_grad()
             output_r, output_s = net(images)
-            # print("output_r", output_r.shape)
-            # print("output_s", output_s.shape)
 
             # Radical Losses
             loss = R_losses(output_r, targets)
@@ -91,8 +74,6 @@ def fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, data
 
             # calculate accuracy
             prediction = torch.argmax(output_s, 1)
-            # print("prediction",prediction)
-            # print("target_SR_tensor", target_SR_tensor)
             correct_s += (prediction == target_SR_tensor).sum().float()
             total += len(target_SR)
         print('Train_Accuracy_s: %f' % ((correct_s / total).cpu().detach().data.numpy()))
@@ -111,16 +92,11 @@ def fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, data
 
             ##### Model Inputs: inputs and targets #####
             images, target_SR_val, targets_val = batch[0], batch[1], batch[2]
-            # print("images", images.shape)
-            # print("target_SR", len(target_SR_val))
-            # print("targets", len(targets_val))
-
 
             with torch.no_grad():
                 images_val = Variable(torch.from_numpy(images).type(torch.FloatTensor)).cuda()
                 targets_val = [Variable(torch.from_numpy(ann).type(torch.FloatTensor)) for ann in targets_val]
                 target_SR_val_tensor = Variable(torch.from_numpy(np.array(target_SR_val)).type(torch.LongTensor)).squeeze().cuda()
-                # print("target_SR_val_tensor", target_SR_val_tensor.shape)
 
             optimizer.zero_grad()
             output_r, output_s = net(images_val)
@@ -149,7 +125,6 @@ def fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, data
             prediction = torch.argmax(output_s, 1)
             correct_s_val += (prediction == target_SR_val_tensor).sum().float()
             total_val += len(target_SR_val_tensor)
-    # acc_str = 'Accuracy: %f' % ((correct_s / total).cpu().detach().data.numpy())
 
     print('Finish Validation')
     print('Epoch:' + str(epoch + 1) + '/' + str(Epoch))
@@ -180,9 +155,6 @@ def temp_monitor():
             cpu_temps += [float(sensor.Value)]
         elif sensor.SensorType == u'Temperature' and 'GPU' in sensor.Name:
             gpu_temp = sensor.Value
-
-    # print("Avg CPU: {}".format(avg(cpu_temps)))
-    # print("GPU: {}".format(gpu_temp))
     if avg(cpu_temps) > 75 or gpu_temp > 75:
         print("Avg CPU: {}".format(avg(cpu_temps)))
         print("GPU: {}".format(gpu_temp))
@@ -201,14 +173,14 @@ if __name__ == "__main__":
     model = RIEBody(Config)
 
     # load pre-trained models
-    model_path = "model_data/pretrained_weights.pth"
+    model_path = "model_data/pretrained_weights_rezcr.pth"
     print('Loading weights into state dict...')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model_dict = model.state_dict()
-    # pretrained_dict = torch.load(model_path, map_location=device)
-    # pretrained_dict = {k: v for k, v in pretrained_dict.items() if np.shape(model_dict[k]) == np.shape(v)}
-    # model_dict.update(pretrained_dict)
-    # model.load_state_dict(model_dict)
+    pretrained_dict = torch.load(model_path, map_location=device)
+    pretrained_dict = {k: v for k, v in pretrained_dict.items() if np.shape(model_dict[k]) == np.shape(v)}
+    model_dict.update(pretrained_dict)
+    model.load_state_dict(model_dict)
     print('Finished Model Loading')
 
     net = model.train()
@@ -223,7 +195,7 @@ if __name__ == "__main__":
     lr = 1e-3
     Batch_size = 8
     Init_Epoch = 0
-    Freeze_Epoch = 100
+    All_Epoch = 152
 
     #####  set loss #####
     R_losses = RadicalLoss(np.reshape(Config["RIE"]["anchors"], [-1, 2]), Config["RIE"]["classes"], (Config["img_w"], Config["img_h"]), Cuda, normalize)
@@ -270,9 +242,7 @@ if __name__ == "__main__":
     for param in model.backbone.parameters():
         param.requires_grad = True   # Do not freeze training
 
-    for epoch in range(Init_Epoch, Freeze_Epoch):
-        fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, dataloader, dataloader_val, Freeze_Epoch)
+    for epoch in range(Init_Epoch, All_Epoch):
+        fit_ont_epoch(net, R_losses, S_loss, epoch, epoch_size, epoch_size_val, dataloader, dataloader_val, All_Epoch)
         lr_scheduler.step()
         temp_monitor()
-
-       
