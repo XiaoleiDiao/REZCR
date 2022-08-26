@@ -1,3 +1,8 @@
+# ----------------------------------------------#
+#    Loss function for radical extraction
+# ----------------------------------------------#
+
+
 import math
 from random import shuffle
 
@@ -12,9 +17,11 @@ from utils.utils import bbox_iou
 
 
 def jaccard(_box_a, _box_b):
+
     # Calculate the coordinates of the top-left and bottom-right points of the GT box
     b1_x1, b1_x2 = _box_a[:, 0] - _box_a[:, 2] / 2, _box_a[:, 0] + _box_a[:, 2] / 2
     b1_y1, b1_y2 = _box_a[:, 1] - _box_a[:, 3] / 2, _box_a[:, 1] + _box_a[:, 3] / 2
+
     # Calculate the coordinates of the top-left and bottom-right points of the anchor box
     b2_x1, b2_x2 = _box_b[:, 0] - _box_b[:, 2] / 2, _box_b[:, 0] + _box_b[:, 2] / 2
     b2_y1, b2_y2 = _box_b[:, 1] - _box_b[:, 3] / 2, _box_b[:, 1] + _box_b[:, 3] / 2
@@ -29,19 +36,20 @@ def jaccard(_box_a, _box_b):
     min_xy = torch.max(box_a[:, :2].unsqueeze(1).expand(A, B, 2),
                        box_b[:, :2].unsqueeze(0).expand(A, B, 2))
     inter = torch.clamp((max_xy - min_xy), min=0)
-
     inter = inter[:, :, 0] * inter[:, :, 1]
+
     # Calculate the areas of the GT box and anchor box
     area_a = ((box_a[:, 2]-box_a[:, 0]) *
               (box_a[:, 3]-box_a[:, 1])).unsqueeze(1).expand_as(inter)  # [A,B]
     area_b = ((box_b[:, 2]-box_b[:, 0]) *
               (box_b[:, 3]-box_b[:, 1])).unsqueeze(0).expand_as(inter)  # [A,B]
+
     # Calculate IOU
     union = area_a + area_b - inter
     return inter / union  # [A,B]
     
 def clip_by_tensor(t,t_min,t_max):
-    t=t.float()
+    t = t.float()
  
     result = (t >= t_min).float() * t + (t < t_min).float() * t_min
     result = (result <= t_max).float() * result + (result > t_max).float() * t_max
@@ -59,17 +67,16 @@ def BCELoss(pred,target):
 class RadicalLoss(nn.Module):
     def __init__(self, anchors, num_classes, img_size, cuda, normalize):
         super(RadicalLoss, self).__init__()
-        #-----------------------------------------------------------#
-        #   13x13的特征层对应的anchor是[116,90],[156,198],[373,326]
-        #-----------------------------------------------------------#
+
         self.anchors = anchors
         self.num_anchors = len(anchors) # num_anchors = 9
         self.num_classes = num_classes
         self.bbox_attrs = 5 + num_classes
-        #-------------------------------------#
-        #   get the w & h of the feature map  13、26、52
-        #-------------------------------------#
+        #----------------------------------------------------#
+        #   get the w & h of the feature map
+        #----------------------------------------------------#
         self.img_size = img_size
+
         # The threshold of bounding box confidence if there is a radical
         self.ignore_threshold = 0.5
         self.lambda_xy = 1.0
@@ -84,54 +91,44 @@ class RadicalLoss(nn.Module):
         in_h = input.size(2)
         in_w = input.size(3)
 
-        #-----------------------------------------------------------------------#
-        #   计算步长
-        #   每一个特征点对应原来的图片上多少个像素点
-        #   如果特征层为13x13的话，一个特征点就对应原来的图片上的32个像素点
-        #   如果特征层为26x26的话，一个特征点就对应原来的图片上的16个像素点
-        #   如果特征层为52x52的话，一个特征点就对应原来的图片上的8个像素点
-        #   stride_h = stride_w = 32、16、8
-        #-----------------------------------------------------------------------#
+        #----------------------------------------------------------------------------------------------------#
+        #   calculation step: Each feature point corresponds to how many pixels on the original image
+        #----------------------------------------------------------------------------------------------------#
         stride_h = self.img_size[1] / in_h
         stride_w = self.img_size[0] / in_w
-        #-------------------------------------------------#
-        #   此时获得的scaled_anchors大小是相对于特征层的
-        #-------------------------------------------------#
         scaled_anchors = [(a_w / stride_w, a_h / stride_h) for a_w, a_h in self.anchors]
 
-        #-----------------------------------------------#
-        #   输入的input一共有三个，他们的shape分别是
-        #   batch_size, 3, 13, 13, 5 + num_classes
-        #-----------------------------------------------#
+        #--------------------------------------------------------------------#
+        #   the input shape: batch_size, 3, 13, 13, 5 + num_classes
+        #--------------------------------------------------------------------#
         prediction = input.view(bs, int(self.num_anchors/3),
                                 self.bbox_attrs, in_h, in_w).permute(0, 1, 3, 4, 2).contiguous()     # reshape
 
-        # 先验框的中心位置的调整参数
+
+        # Adjustment parameters for the center point of the prior box
         x = torch.sigmoid(prediction[..., 0])
         y = torch.sigmoid(prediction[..., 1])
-        # 先验框的宽高调整参数
+
+        # Adjustment parameters for the width and height of the prior box
         w = prediction[..., 2]
         h = prediction[..., 3]
-        # 获得置信度，是否有物体
+
+        # confidence for if there is an object
         conf = torch.sigmoid(prediction[..., 4])
-        # 种类置信度
+
+        # category confidence
         pred_cls = torch.sigmoid(prediction[..., 5:])
 
-        #---------------------------------------------------------------#
-        #   找到哪些先验框内部包含物体
-        #   利用真实框和先验框计算交并比
-        #   mask        batch_size, 3, in_h, in_w   无目标的特征点
-        #   noobj_mask  batch_size, 3, in_h, in_w   有目标的特征点
-        #   tx          batch_size, 3, in_h, in_w   中心x偏移情况
-        #   ty          batch_size, 3, in_h, in_w   中心y偏移情况
-        #   tw          batch_size, 3, in_h, in_w   宽高调整参数的真实值
-        #   th          batch_size, 3, in_h, in_w   宽高调整参数的真实值
-        #   tconf       batch_size, 3, in_h, in_w   置信度真实值
-        #   tcls        batch_size, 3, in_h, in_w, num_classes  种类真实值
-        #   将预测结果进行解码，判断预测结果和真实值的重合程度
-        #   如果重合程度过大则忽略，因为这些特征点属于预测比较准确的特征点
-        #   作为负样本不合适
-        #----------------------------------------------------------------#
+        #-------------------------------------------------------------------------------------------#
+        #   mask        batch_size, 3, in_h, in_w   feature points without object
+        #   noobj_mask  batch_size, 3, in_h, in_w   feature points with object
+        #   tx          batch_size, 3, in_h, in_w   offset of the center coordinate x
+        #   ty          batch_size, 3, in_h, in_w   offset of the center coordinate y
+        #   tw          batch_size, 3, in_h, in_w   GT of the width adjustment parameters
+        #   th          batch_size, 3, in_h, in_w   GT of the height adjustment parameters
+        #   tconf       batch_size, 3, in_h, in_w   Confidence GT
+        #   tcls        batch_size, 3, in_h, in_w, num_classes  categries GT
+        #-------------------------------------------------------------------------------------------#
         mask, noobj_mask, tx, ty, tw, th, tconf, tcls, box_loss_scale_x, box_loss_scale_y = self.get_target(targets, scaled_anchors, in_w, in_h, self.ignore_threshold)
         noobj_mask = self.get_ignore(prediction, targets, scaled_anchors, in_w, in_h, noobj_mask)
 
@@ -143,13 +140,13 @@ class RadicalLoss(nn.Module):
             tconf, tcls = tconf.cuda(), tcls.cuda()
         box_loss_scale = 2 - box_loss_scale_x * box_loss_scale_y
         
-        # 计算中心偏移情况的loss，使用BCELoss效果好一些
-        loss_x = torch.sum(BCELoss(x, tx) * box_loss_scale * mask)    # mask?
+        # Calculate the loss of the center offset
+        loss_x = torch.sum(BCELoss(x, tx) * box_loss_scale * mask)
         loss_y = torch.sum(BCELoss(y, ty) * box_loss_scale * mask)
-        # 计算宽高调整值的loss
+        # Calculate the loss of the width and height adjustment values
         loss_w = torch.sum(MSELoss(w, tw) * 0.5 * box_loss_scale * mask)
         loss_h = torch.sum(MSELoss(h, th) * 0.5 * box_loss_scale * mask)
-        # 计算置信度的loss
+        # Calculate the confidence loss
         loss_conf = torch.sum(BCELoss(conf, mask) * mask) + \
                     torch.sum(BCELoss(conf, mask) * noobj_mask)
                     
@@ -162,18 +159,13 @@ class RadicalLoss(nn.Module):
         return loss/(bs/3)
 
     def get_target(self, target, anchors, in_w, in_h, ignore_threshold):
-        #-----------------------------------------------------#
-        #   计算一共有多少张图片
-        #-----------------------------------------------------#
+
+        #   Calculate the number of images
         bs = len(target)
-        #-------------------------------------------------------#
-        #   获得当前特征层先验框所属的编号，方便后面对先验框筛选
-        #-------------------------------------------------------#
         anchor_index = [0,1,2]
         subtract_index = 0
-        #-------------------------------------------------------#
-        #   创建全是0或者全是1的阵列
-        #-------------------------------------------------------#
+
+        #  Create an array of all 0s or all 1s
         mask = torch.zeros(bs, int(self.num_anchors/3), in_h, in_w, requires_grad=False)
         noobj_mask = torch.ones(bs, int(self.num_anchors/3), in_h, in_w, requires_grad=False)
 
@@ -189,55 +181,52 @@ class RadicalLoss(nn.Module):
         for b in range(bs):            
             if len(target[b])==0:
                 continue
-            #-------------------------------------------------------#
-            #   计算出正样本在特征层上的中心点
-            #-------------------------------------------------------#
+            #-----------------------------------------------------------------------------------------#
+            #  Calculate the center point of the positive sample on the feature layer
+            #-----------------------------------------------------------------------------------------#
             gxs = target[b][:, 0:1] * in_w
             gys = target[b][:, 1:2] * in_h
             
-            #-------------------------------------------------------#
-            #   计算出正样本相对于特征层的宽高
-            #-------------------------------------------------------#
+            #-----------------------------------------------------------------------------------------#
+            #  Calculate the width and height of the positive sample relative to the feature layer
+            #-----------------------------------------------------------------------------------------#
             gws = target[b][:, 2:3] * in_w
             ghs = target[b][:, 3:4] * in_h
 
-            #-------------------------------------------------------#
-            #   计算出正样本属于特征层的哪个特征点
-            #-------------------------------------------------------#
+            #-----------------------------------------------------------------------------------------#
+            #  Calculate which feature point of the feature layer the positive sample belongs to
+            #-----------------------------------------------------------------------------------------#
             gis = torch.floor(gxs)
             gjs = torch.floor(gys)
             
             #-------------------------------------------------------#
-            #   将真实框转换一个形式
-            #   num_true_box, 4
+            #   Convert the real box: num_true_box, 4
             #-------------------------------------------------------#
             gt_box = torch.FloatTensor(torch.cat([torch.zeros_like(gws), torch.zeros_like(ghs), gws, ghs], 1))
             
             #-------------------------------------------------------#
-            #   将先验框转换一个形式
-            #   9, 4
+            #   Convert the prior box
             #-------------------------------------------------------#
             anchor_shapes = torch.FloatTensor(torch.cat((torch.zeros((self.num_anchors, 2)), torch.FloatTensor(anchors)), 1))
+
             #-------------------------------------------------------#
-            #   计算交并比
-            #   num_true_box, 9
+            #   Calculate IOU: num_true_box, 9
             #-------------------------------------------------------#
             anch_ious = jaccard(gt_box, anchor_shapes)
 
             #-------------------------------------------------------#
-            #   计算重合度最大的先验框是哪个
-            #   num_true_box, 
+            #   Find the prior box with the largest coincidence
             #-------------------------------------------------------#
             best_ns = torch.argmax(anch_ious,dim=-1)
             for i, best_n in enumerate(best_ns):
                 if best_n not in anchor_index:
                     continue
-                #-------------------------------------------------------------#
-                #   取出各类坐标：
-                #   gi和gj代表的是真实框对应的特征点的x轴y轴坐标
-                #   gx和gy代表真实框的x轴和y轴坐标
-                #   gw和gh代表真实框的宽和高
-                #-------------------------------------------------------------#
+                #-------------------------------------------------------------------------------------------------------------#
+                #   Take out various coordinates：
+                #   gi and gj represent the x-axis and y-axis coordinates of the feature points corresponding to the GT box
+                #   gx and gy represent the x-axis and y-axis coordinates of the GT box
+                #   gw and gh represent the width and height of the GT box
+                #-------------------------------------------------------------------------------------------------------------#
                 gi = gis[i].long()
                 gj = gjs[i].long()
                 gx = gxs[i]
@@ -248,37 +237,38 @@ class RadicalLoss(nn.Module):
                 if (gj < in_h) and (gi < in_w):
                     best_n = best_n - subtract_index
 
-                    #----------------------------------------#
-                    #   noobj_mask代表无目标的特征点
-                    #----------------------------------------#
+                    #------------------------------------------------------#
+                    #   feature points without objects
+                    #------------------------------------------------------#
                     noobj_mask[b, best_n, gj, gi] = 0
-                    #----------------------------------------#
-                    #   mask代表有目标的特征点
-                    #----------------------------------------#
+                    #------------------------------------------------------#
+                    #   feature points with objects
+                    #------------------------------------------------------#
                     mask[b, best_n, gj, gi] = 1
-                    #----------------------------------------#
-                    #   tx、ty代表中心调整参数的真实值
-                    #----------------------------------------#
+                    #------------------------------------------------------#
+                    #  GT of center adjustment parameterS
+                    #------------------------------------------------------#
                     tx[b, best_n, gj, gi] = gx - gi.float()
                     ty[b, best_n, gj, gi] = gy - gj.float()
-                    #----------------------------------------#
-                    #   tw、th代表宽高调整参数的真实值
-                    #----------------------------------------#
+                    #------------------------------------------------------#
+                    #  GT of the width and height adjustment parameters
+                    #------------------------------------------------------#
                     tw[b, best_n, gj, gi] = math.log(gw / anchors[best_n+subtract_index][0])
                     th[b, best_n, gj, gi] = math.log(gh / anchors[best_n+subtract_index][1])
-                    #----------------------------------------#
-                    #   用于获得xywh的比例
-                    #   大目标loss权重小，小目标loss权重大
-                    #----------------------------------------#
+                    #------------------------------------------------------#
+                    #   the scale used to get the xywh
+                    #------------------------------------------------------#
                     box_loss_scale_x[b, best_n, gj, gi] = target[b][i, 2]
                     box_loss_scale_y[b, best_n, gj, gi] = target[b][i, 3]
-                    #----------------------------------------#
-                    #   tconf代表物体置信度
-                    #----------------------------------------#
+
+                    #------------------------------------------------------#
+                    #   object confidence
+                    #------------------------------------------------------#
                     tconf[b, best_n, gj, gi] = 1
-                    #----------------------------------------#
-                    #   tcls代表种类置信度
-                    #----------------------------------------#
+
+                    #------------------------------------------------------#
+                    #   category confidence
+                    #------------------------------------------------------#
                     tcls[b, best_n, gj, gi, int(target[b][i, 4])] = 1
                 else:
                     print('Step {0} out of bound'.format(b))
@@ -289,41 +279,42 @@ class RadicalLoss(nn.Module):
 
     def get_ignore(self,prediction,target,scaled_anchors,in_w, in_h,noobj_mask):
         #-----------------------------------------------------#
-        #   计算一共有多少张图片
+        #   number of images
         #-----------------------------------------------------#
         bs = len(target)
+
         #-------------------------------------------------------#
-        #   获得当前特征层先验框所属的编号，方便后面对先验框筛选
+        #   get the index of the prior box in current feature layer
         #-------------------------------------------------------#
         anchor_index = [0,1,2]
         scaled_anchors = np.array(scaled_anchors)[anchor_index]
 
-        # 先验框的中心位置的调整参数
+        # adjustment parameters for the center position of the prior box
         x = torch.sigmoid(prediction[..., 0])  
         y = torch.sigmoid(prediction[..., 1])
-        # 先验框的宽高调整参数
+        # adjustment parameters for the width and height  of the prior box
         w = prediction[..., 2]  # Width
         h = prediction[..., 3]  # Height
 
         FloatTensor = torch.cuda.FloatTensor if x.is_cuda else torch.FloatTensor
         LongTensor = torch.cuda.LongTensor if x.is_cuda else torch.LongTensor
 
-        # 生成网格，先验框中心，网格左上角
+        # generate grid, a priori box center, and top left corner of grid
         grid_x = torch.linspace(0, in_w - 1, in_w).repeat(in_h, 1).repeat(
             int(bs*self.num_anchors/3), 1, 1).view(x.shape).type(FloatTensor)
         grid_y = torch.linspace(0, in_h - 1, in_h).repeat(in_w, 1).t().repeat(
             int(bs*self.num_anchors/3), 1, 1).view(y.shape).type(FloatTensor)
 
-        # 生成先验框的宽高
+        # generate the width and height of the prior box
         anchor_w = FloatTensor(scaled_anchors).index_select(1, LongTensor([0]))
         anchor_h = FloatTensor(scaled_anchors).index_select(1, LongTensor([1]))
         
         anchor_w = anchor_w.repeat(bs, 1).repeat(1, 1, in_h * in_w).view(w.shape)
         anchor_h = anchor_h.repeat(bs, 1).repeat(1, 1, in_h * in_w).view(h.shape)
         
-        #-------------------------------------------------------#
-        #   计算调整后的先验框中心与宽高
-        #-------------------------------------------------------#
+        #-------------------------------------------------------------------------------#
+        #   Calculate the center and width & height of the adjusted prior box
+        #-------------------------------------------------------------------------------#
         pred_boxes = FloatTensor(prediction[..., :4].shape)
         pred_boxes[..., 0] = x.data + grid_x
         pred_boxes[..., 1] = y.data + grid_y
@@ -332,13 +323,13 @@ class RadicalLoss(nn.Module):
 
         for i in range(bs):
             pred_boxes_for_ignore = pred_boxes[i]
+
             #-------------------------------------------------------#
-            #   将预测结果转换一个形式
-            #   pred_boxes_for_ignore      num_anchors, 4
+            #   Convert the prediction result: num_anchors, 4
             #-------------------------------------------------------#
             pred_boxes_for_ignore = pred_boxes_for_ignore.view(-1, 4)
+
             #-------------------------------------------------------#
-            #   计算真实框，并把真实框转换成相对于特征层的大小
             #   gt_box      num_true_box, 4
             #-------------------------------------------------------#
             if len(target[i]) > 0:
@@ -349,14 +340,14 @@ class RadicalLoss(nn.Module):
                 gt_box = torch.FloatTensor(torch.cat([gx, gy, gw, gh],-1)).type(FloatTensor)
 
                 #-------------------------------------------------------#
-                #   计算交并比
-                #   anch_ious       num_true_box, num_anchors
+                #   calculate IOU: num_true_box, num_anchors
                 #-------------------------------------------------------#
                 anch_ious = jaccard(gt_box, pred_boxes_for_ignore)
-                #-------------------------------------------------------#
-                #   每个先验框对应真实框的最大重合度
+
+                #-----------------------------------------------------------------------------------#
+                #   The maximum coincidence degree of each prior box corresponding to the GT box
                 #   anch_ious_max   num_anchors
-                #-------------------------------------------------------#
+                #-----------------------------------------------------------------------------------#
                 anch_ious_max, _ = torch.max(anch_ious,dim=0)
                 anch_ious_max = anch_ious_max.view(pred_boxes[i].size()[:3])
                 noobj_mask[i][anch_ious_max>self.ignore_threshold] = 0
@@ -365,145 +356,4 @@ class RadicalLoss(nn.Module):
 
 def rand(a=0, b=1):
     return np.random.rand()*(b-a) + a
-
-
-# class Generator(object):
-#     def __init__(self,batch_size,
-#                  train_lines, image_size,
-#                  ):
-#
-#         self.batch_size = batch_size
-#         self.train_lines = train_lines
-#         self.train_batches = len(train_lines)
-#         self.image_size = image_size
-#
-#     def get_random_data(self, annotation_line, input_shape, jitter=.3, hue=.1, sat=1.5, val=1.5, random=True):
-#         '''r实时数据增强的随机预处理'''
-#         line = annotation_line.split()
-#         image = Image.open(line[0])
-#         iw, ih = image.size
-#         h, w = input_shape
-#         box = np.array([np.array(list(map(int,box.split(',')))) for box in line[1:]])
-#
-#         if not random:
-#             scale = min(w/iw, h/ih)
-#             nw = int(iw*scale)
-#             nh = int(ih*scale)
-#             dx = (w-nw)//2
-#             dy = (h-nh)//2
-#
-#             image = image.resize((nw,nh), Image.BICUBIC)
-#             new_image = Image.new('RGB', (w,h), (128,128,128))
-#             new_image.paste(image, (dx, dy))
-#             image_data = np.array(new_image, np.float32)
-#
-#             # 调整目标框坐标
-#             box_data = np.zeros((len(box), 5))
-#             if len(box) > 0:
-#                 np.random.shuffle(box)
-#                 box[:, [0, 2]] = box[:, [0, 2]] * nw / iw + dx
-#                 box[:, [1, 3]] = box[:, [1, 3]] * nh / ih + dy
-#                 box[:, 0:2][box[:, 0:2] < 0] = 0
-#                 box[:, 2][box[:, 2] > w] = w
-#                 box[:, 3][box[:, 3] > h] = h
-#                 box_w = box[:, 2] - box[:, 0]
-#                 box_h = box[:, 3] - box[:, 1]
-#                 box = box[np.logical_and(box_w > 1, box_h > 1)]  # 保留有效框
-#                 box_data = np.zeros((len(box), 5))
-#                 box_data[:len(box)] = box
-#
-#             return image_data, box_data
-#
-#         # resize image
-#         new_ar = w/h * rand(1-jitter,1+jitter)/rand(1-jitter,1+jitter)
-#         scale = rand(.25, 2)
-#         if new_ar < 1:
-#             nh = int(scale*h)
-#             nw = int(nh*new_ar)
-#         else:
-#             nw = int(scale*w)
-#             nh = int(nw/new_ar)
-#         image = image.resize((nw,nh), Image.BICUBIC)
-#
-#         # place image
-#         dx = int(rand(0, w-nw))
-#         dy = int(rand(0, h-nh))
-#         new_image = Image.new('RGB', (w,h), (128,128,128))
-#         new_image.paste(image, (dx, dy))
-#         image = new_image
-#
-#         # flip image or not
-#         flip = rand()<.5
-#         if flip: image = image.transpose(Image.FLIP_LEFT_RIGHT)
-#
-#         # distort image
-#         hue = rand(-hue, hue)
-#         sat = rand(1, sat) if rand()<.5 else 1/rand(1, sat)
-#         val = rand(1, val) if rand()<.5 else 1/rand(1, val)
-#         x = cv2.cvtColor(np.array(image,np.float32)/255, cv2.COLOR_RGB2HSV)
-#         x[..., 0] += hue*360
-#         x[..., 0][x[..., 0]>1] -= 1
-#         x[..., 0][x[..., 0]<0] += 1
-#         x[..., 1] *= sat
-#         x[..., 2] *= val
-#         x[x[:,:, 0]>360, 0] = 360
-#         x[:, :, 1:][x[:, :, 1:]>1] = 1
-#         x[x<0] = 0
-#         image_data = cv2.cvtColor(x, cv2.COLOR_HSV2RGB)*255
-#
-#         # correct boxes
-#         box_data = np.zeros((len(box),5))
-#         if len(box)>0:
-#             np.random.shuffle(box)
-#             box[:, [0,2]] = box[:, [0,2]]*nw/iw + dx
-#             box[:, [1,3]] = box[:, [1,3]]*nh/ih + dy
-#             if flip: box[:, [0,2]] = w - box[:, [2,0]]
-#             box[:, 0:2][box[:, 0:2]<0] = 0
-#             box[:, 2][box[:, 2]>w] = w
-#             box[:, 3][box[:, 3]>h] = h
-#             box_w = box[:, 2] - box[:, 0]
-#             box_h = box[:, 3] - box[:, 1]
-#             box = box[np.logical_and(box_w>1, box_h>1)] # discard invalid box
-#             box_data = np.zeros((len(box),5))
-#             box_data[:len(box)] = box
-#
-#         return image_data, box_data
-#
-#     def generate(self, train=True):
-#         while True:
-#             shuffle(self.train_lines)
-#             lines = self.train_lines
-#             inputs = []
-#             targets = []
-#             for annotation_line in lines:
-#                 if train:
-#                     img,y=self.get_random_data(annotation_line, self.image_size[0:2])
-#                 else:
-#                     img,y=self.get_random_data(annotation_line, self.image_size[0:2], random=False)
-#
-#                 if len(y)!=0:
-#                     boxes = np.array(y[:,:4],dtype=np.float32)
-#                     boxes[:,0] = boxes[:,0]/self.image_size[1]
-#                     boxes[:,1] = boxes[:,1]/self.image_size[0]
-#                     boxes[:,2] = boxes[:,2]/self.image_size[1]
-#                     boxes[:,3] = boxes[:,3]/self.image_size[0]
-#
-#                     boxes = np.maximum(np.minimum(boxes,1),0)
-#                     boxes[:,2] = boxes[:,2] - boxes[:,0]
-#                     boxes[:,3] = boxes[:,3] - boxes[:,1]
-#
-#                     boxes[:,0] = boxes[:,0] + boxes[:,2]/2
-#                     boxes[:,1] = boxes[:,1] + boxes[:,3]/2
-#                     y = np.concatenate([boxes,y[:,-1:]],axis=-1)
-#
-#                 img = np.array(img,dtype = np.float32)
-#
-#                 inputs.append(np.transpose(img/255.0,(2,0,1)))
-#                 targets.append(np.array(y,dtype = np.float32))
-#                 if len(targets) == self.batch_size:
-#                     tmp_inp = np.array(inputs)
-#                     tmp_targets = targets
-#                     inputs = []
-#                     targets = []
-#                     yield tmp_inp, tmp_targets
 
