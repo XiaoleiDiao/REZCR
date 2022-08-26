@@ -1,96 +1,26 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Jun 21 16:55:43 2021
-@author: Xiaolei
-"""
-
-
-# Imports
-import time
-# start = time.time()
-import numpy as np
-import sys
-# import tensorflow as tf
-import cv2
-from PIL import Image
-import rdflib
-import pandas as pd
-import collections
-from rdflib import Namespace
-import os, os.path
+'''
+predict.py有几个注意点
+1、无法进行批量预测，如果想要批量预测，可以利用os.listdir()遍历文件夹，利用Image.open打开图片文件进行预测。
+2、如果想要保存，利用r_image.save("img.jpg")即可保存。
+3、如果想要获得框的坐标，可以进入detect_image函数，读取top,left,bottom,right这四个值。
+4、如果想要截取下目标，可以利用获取到的top,left,bottom,right这四个值在原图上利用矩阵的方式进行截取。
+'''
 import pandas
 import os
 import cv2
 import numpy as np
-from skimage import morphology
-from PIL import Image
+import rdflib
+from rdflib import Namespace
 import collections
-from yolo_r import YOLO
-from predict_oracle import DerectionRadical
+import pandas as pd
+from PIL import Image
+import itertools
+from get_RPs_SP import RIE
 
-
-# Reasoning in KG
-
-#更新df，同一位置的候选框只保留置信度最高的class
-def UpdateOutputRadical(df):
-    # print(df)
-    point = []
-    try:
-        for index, row in df.iterrows():
-            img_id, y1, x1, radical_acc, radical_id = row[0], row[1], row[2], row[5], row[6]
-
-            for p in point:
-                x = p[0]
-                y = p[1]
-
-                if float(x1)-1 <= float(x) <= float(x1)+1:
-                    if float(y1)-1 <= float(y) <= float(y1)+1:
-                        # print("delete current line!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-                        df = df.drop(index=index)
-                        # print("new df", df)
-
-            point.append((x1,y1))
-    except:
-        print("删除同一位置候选框的多个radical报错！")
-
-    return df
-
-
-
-
-# 对应class_id 和 部件名
-def getRadicalName(excelradicalname):
-    # excelradicalname = './component test/radical_id.xls'
-    xls_radical = pd.read_excel(excelradicalname)
-    dic_radical = collections.OrderedDict(zip(xls_radical.iloc[:, 0], xls_radical.iloc[:, 1]))
-    print(dic_radical)
-    return dic_radical
-
-
-
-
-# 读取甲骨文-部件对应表
-def gerCharacterRadical(excelcharactername):
-    # excelcharactername = './excel_data/oracle_radical_779.xls'
-    xls_character = pd.read_excel(excelcharactername)
-    character_name = []
-    for x in xls_character.iloc[:, 1]:
-        x = str(x)
-        character_name.append(x)
-    dic_radical_num = collections.OrderedDict(zip(character_name, xls_character.iloc[:, 3]))
-    print(dic_radical_num)
-    dic_character_name = collections.OrderedDict(zip(character_name, xls_character.iloc[:, 2]))
-    print(dic_character_name)
-    dic_contain_radical = collections.OrderedDict(zip(character_name, xls_character.iloc[:, 5]))
-    print(dic_contain_radical)
-    return dic_radical_num, dic_character_name, dic_contain_radical
-
-
-
-
-#读取知识图谱
 def readKG(owl_path):
-    # owl_path = "./component test/CR_KG.owl"
+    '''
+     Read Knowledge graph
+    '''
     g1 = rdflib.Graph()
     g1.parse(owl_path, format="xml")
     ns = Namespace('http://www.jlu.edu.cn/CR/ontology#')  # 命名空间
@@ -98,235 +28,166 @@ def readKG(owl_path):
     return(g1, ns)
 
 
-
-
-# find Single character
-def findSingleCharacter(df):
-    for index, row in df.iterrows():
-        img_id, x1,y1,x2,y2, radical_acc, radical_id = row[0], row[1], row[2], row[3], row[4], row[5], row[6]
-        print("radical_id",radical_id)
-        radical_id = 'r_' + radical_id
-        radical_name = dic_radical.get(radical_id)
-        character_value = radical_name + "*1"
-        character = list(dic_contain_radical.keys())[list(dic_contain_radical.values()).index(character_value)]
-        print("character",character)
-
-    return character
-
-
-# 判断两个list是否完全一样
-def equal_ignore_order(a, b):
-    """ Use only when elements are neither hashable nor sortable! """
-    unmatched = list(b)
-    for element in a:
-        try:
-            unmatched.remove(element)
-        except ValueError:
-            return False
-    return not unmatched
+def gerCharacterRadical(excelcharactername):
+    '''
+    Get character categories' name that corresponding with character labels
+    '''
+    xls_character = pd.read_excel(excelcharactername)
+    character_name = []
+    for x in xls_character.iloc[:, 1]:
+        x = str(x)
+        character_name.append(x)
+    dic_character_name = collections.OrderedDict(zip(character_name, xls_character.iloc[:, 2]))
+    dic_contain_radical = collections.OrderedDict(zip(character_name, xls_character.iloc[:, 5]))
+    return dic_character_name, dic_contain_radical
 
 
 
-# find combination character
-def findnRC(df):
-    character = []     # 记录含有识别到的全部部件的 所有甲骨文字符
-    character4 = []     #记录仅由当前部件组成的所有甲骨文
-    character2 = []    # 记录有几个甲骨文由当前这些部件组成
-    character3 = []
-    # radical_acc = []
-    radical = []       # 记录该图片内所有识别到的部件
-    radical_test = []  # 统计所有候选甲骨文字符分别包含哪些部件
-    character_can = list(dic_contain_radical.keys())
-    # get_result = False
-    character_can_2 = []   # 仅由当前部件组成的所有甲骨文汇总
-
-    # print("character_can_ori", character_can)
-
-    for index, row in df.iterrows():
-        img_id, r_acc, radical_id = row[0], row[5], row[6]
-        print('current line', img_id, r_acc, radical_id)
-
-        # radical_acc.append(r_acc)
-        radical_id = "r_" + radical_id
-        ra_name = dic_radical.get(radical_id)
-        radical.append(ra_name)
-        print("radical", radical)
+def DerectionRadical(ImagePath):
+    '''
+    Predict radical information, output radical predictions and structural relation predictions.
+    '''
+    image = Image.open(ImagePath)
+    model = RIE()
+    RPs, SP, r_image = model.detect_image(image)
+    return RPs, SP
 
 
-    # 在知识图谱中找到对应的character
-    for i in range(len(radical)):
-        print("i", i)
-        for s in g1.subjects(ns['Contain'], ns[radical[i]]):
-            c = s[34:]
-            # print("c", c)
-            character.append(c)
-            # print("character", character)
-
-        character_can = list(set(character_can).intersection(set(character)))
-        character = []
-    print("character_can", character_can)
-
-    if len(character_can) == 1:
-        # get_result = True
-        print("character_can_final", character_can)
-        return character_can
-
-    # elif len(character_can) != 1:
-    #     print("进入第二种情况的判断")
-    #     for j in range(len(character_can)):
-    #         # print("j", j)
-    #         for o in g1.objects(ns[character_can[j]], ns['Contain']):
-    #             # print("o", o)
-    #             r = o[34:]
-    #             radical_test.append(r)
-    #
-    #         # print("radical_test", sorted(radical_test))
-    #         # print("radical now", sorted(radical))
-    #
-    #         # collections.Counter(radical_test) == collections.Counter(radical)
-    #         if equal_ignore_order(radical_test, radical):
-    #             print("找到正好对应的甲骨文了！！！")
-    #             # get_result = True
-    #             print("character41", character4)
-    #             character4 = character_can[j]
-    #             print("character42", character4)
-    #
-    #             # return character_can
-    #             character_can_2.append(character4)
-    #             print("character_can_2", character_can_2)
-    #             character4 = []
-    #         radical_test = []
-    #     if len(character_can_2) == 1:
-    #         print("character_can_2", character_can_2)
-    #         return character_can_2
+def R_label_to_name(excel_path, labels):
+    '''
+    get radical name that corresponding with radical labels.
+    '''
+    xls = pd.read_excel(excel_path)
+    dic = collections.OrderedDict(zip(xls.iloc[:, 0], xls.iloc[:, 1]))
+    name_conf = []
+    for i in range(len(labels)):
+        name_conf_temp = []
+        for j in range(len(labels[0])):
+            temp = []
+            label = 'r_'+ str(labels[i][j][0])
+            name = dic.get(label)
+            conf = labels[i][j][1]
+            temp.append(name)
+            temp.append(conf)
+            temp_t = tuple(temp)
+            name_conf_temp.append(temp_t)
+        name_conf.append(name_conf_temp)
+    return name_conf
 
 
+
+def map(RPs):
+    '''
+    Get all candidate radical composition sets.
+    '''
+    R = []
+    for i in range(len(RPs)):
+        r_candidate = RPs[i]
+        # maxSort the confidence of radical candidates
+        r_candidate.sort(key=lambda x: x[1], reverse=True)
+        R.append(r_candidate)
+    if len(R) == 1:
+        return R
+    elif len(R) ==2:
+        pairs = list(itertools.product(R[0], R[1]))
+        return pairs
+    elif len(R) ==3:
+        pairs = list(itertools.product(R[0], R[1], R[2]))
+        return pairs
     else:
-        print("进入第三种情况的判断")
-
-        # print("detemine radical num")
-        for k in range(len(character_can)):
-            print("k", k)
-            print("character_can[k]", character_can[k])
-            # for r_num in g1.objects((ns[character_can[j]], ns['Radical_all_num'])):
-            for s in g1.objects(ns[character_can[k]], ns['Radical_all_num']):
-                r_num = s[:-2]
-            # for s in g1.subjects(ns['Radical_all_num'], len(radical)):
-                print("r_num",r_num)
-                print("len(radical)",str(len(radical)))
-
-                if r_num == str(len(radical)):
-                    print("部件数量match！！！！！！！！！！！！！！")
-                    character2.append(character_can[k])
-                    print("character2", character2)
-
-
-        if len(character2) == 1:
-            print("只有一个甲骨文由当前这些部件组成")
-            return character2
-
-        else:
-
-            # 统计当前radical的个数及组成
-            print("统计当前radical的个数及组成")
-            r_s = set()
-            # print("s   what is this s:", r_s)
-            # radical_out_num = ""
-            pre = ""
-            pre2 = ""
-            radical_out_contain = []
-            radical_contain_num2 = []
-
-            print("radical", radical)
-            for r_name in radical:  # 循环列表中的元素
-                if r_name != pre:
-                    if r_name not in r_s:  # 如果i不在集合中
-                        r_s.add(i)  # 将i添加到集合中
-
-                        radical_out_num = r_name + "*"+ str(radical.count(r_name))
-                        radical_out_contain.append(radical_out_num)
-                        print("radical_out_num", radical_out_num)
-                        print("radical_out_contain", radical_out_contain)
-                        pre = r_name
-
-            # 读取character实际的部件组成及每个部件的个数
-            print("character2", character2)
-            for c1 in character2:
-                print("c1", c1)
-                radical_contain_num = dic_contain_radical.get(c1)
-                radical_contain_num = radical_contain_num.split(",")
-                # radical_contain_num2 = str(radical_contain_num2).split(",")
-                print("radical_contain_num2", radical_contain_num)
-                print("radical_out_contain", radical_out_contain)
-
-
-                # for e in radical_out_contain:
-                #     print("e", e)
-                #     if e in radical_contain_num:
-                #        character3.append(c1)
-
-                if equal_ignore_order(radical_out_contain, radical_contain_num):
-                    print("yes!!")
-                    character3.append(c1)
-
-            character3 = set(character3)
-            print("character3", character3)
-
-            return character3
+        return R
 
 
 
+def CharReason(CKG, RPs, SP, dic_contain_radical):
+    '''
+    Reasoning characters in Character knowledge graph with RPs and SP.
+    '''
+    character_can = []
 
-def main():
-    df = UpdateOutputRadical(data)
-    radical_num = df.shape[0]
-    # print(radical_num)
-    character_out = []
-    character_final = []
+    # mapping radicals
+    M = map(RPs)
 
-    if radical_num == 1:
-        r_name = findSingleCharacter(df)
-        c_name = r_name
-        print("c_name", c_name)
-        character_out.append(c_name)
-        print("Single Character", character_out)
+    # maxSort the confidence of structural relation candidates
+    SP.sort(key=lambda x: x[1], reverse=True)
 
-    elif radical_num > 1:
-        # character_out = set(findnRC(df))
-        character_out = findnRC(df)
+    # find all candidate radical composition sets
+    for i in range(len(M)):
+        character_temp = list(dic_contain_radical.keys())
+        pr_all = 0
+        for j in range(len(M[0])):
+            r = M[i][j][0]
 
-        print("Combination character", character_out)
+            # search characters in CKG with radicals, and get corresponding confidence
+            character = []
+            for s in CKG.subjects(ns['Contain'], ns[r]):
+                c = s[34:]
+                character.append(c)
+            temp = character
+            character_temp = list(set(character_temp).intersection(set(temp)))
+            pr = M[i][j][1]
+            pr_all = pr_all + pr
 
+            # search characters in CKG with structural relations, and get corresponding confidence
+            character_sr = []
+            spj = []
+            for k in range(len(SP)):
+                sr = SP[k][0]
+                for s in CKG.subjects(ns['Compose'], ns[sr]):
+                    c = s[34:]
+                    character_sr.append(c)
+                spj.append(SP[k][1])
 
-    for character in character_out:
-        c_name = dic_character_name.get(character)
-        character_final.append(c_name)
-    print("character_final", character_final)
+        # get candidate character confidence
+        mi = pr_all / len(M[0])
+        pc = 0.7*mi+0.3*spj[0]
 
-    return character_final
+        # get all candidate characters and their confidence
+        for e in character_temp:
+            character_conf = []
+            if i == 0:
+                character_conf.append(e)
+                character_conf.append(pc)
+                character_conf_t = tuple(character_conf)
+                character_can.append(character_conf_t)
+            else:
+                if e in np.array(character_can)[:,0]:
+                    text ="This character is exixting"
+                else:
+                    character_conf.append(e)
+                    character_conf.append(pc)
+                    character_conf_t = tuple(character_conf)
+
+                    character_can.append(character_conf_t)
+
+    character_can.sort(key=lambda x: x[1], reverse=True)
+    # print("character_can", len(character_can), character_can)
+    return character_can
 
 
 
 if __name__ == '__main__':
-    # os.chdir('D:\\Learn Python\\yolo3-pytorch-radical\\')
-    # sys.path.append("..")
-    # PATH_TO_CKPT = './component test/frozen_inference_graph.pb'
-    # PATH_TO_LABELS = os.path.join('train_component', 'my_label_map.pbtxt')
-    PATH_TO_TEST_IMAGES_DIR = 'D:\Learn Python\yolo3-pytorch-radical\img'
-    owl_path = "./kg/oracle_779_KG.owl"
+    input_path = "F:\oracle\REZCR\img/oc_02_1_0139_1_3.png"
+    owl_path= "./oracle_779_KG.owl"
+    CKG, ns = readKG(owl_path)
+    RPs_temp, SP = DerectionRadical(input_path)
     excelradicalname = './excel_data/59_radical_id.xls'
     excelcharactername = './excel_data/oracle_radical_779.xls'
-    # detection_graph, category_index = loadModel(PATH_TO_CKPT, PATH_TO_LABELS)
-    dic_radical = getRadicalName(excelradicalname)
-    print("dic_radical", dic_radical)
-    dic_radical_num, dic_character_name, dic_contain_radical = gerCharacterRadical(excelcharactername)
-    print("dic_radical_num", dic_radical_num, "dic_character_name", dic_character_name, "dic_contain_radical", dic_contain_radical)
-    g1, ns = readKG(owl_path)
-    print("g1", g1, "ns", ns)
-    data = DerectionRadical(PATH_TO_TEST_IMAGES_DIR)
-    print("data", data)
+    RPs = R_label_to_name(excelradicalname, RPs_temp)
+    dic_character_name, dic_contain_radical = gerCharacterRadical(excelcharactername)
+    Character_candidate = CharReason(CKG, RPs, SP, dic_contain_radical)
 
-    main()
 
-    # end = time.time()
-    # print("Execution Time: ", end - start)
+    # Print TOP1 characters
+    character = dic_character_name.get(Character_candidate[0][0])
+    print("TOP1", character, Character_candidate[0][1])
+
+    # Print TOP5 characters
+    for i in range(len(Character_candidate[:5])):
+        c = Character_candidate[i][0]
+        p = Character_candidate[i][1]
+        character = dic_character_name.get(c)
+        print("TOP5-",i, character, p, c)
+        
+        
+        
