@@ -116,18 +116,18 @@ class RIE(object):
                                      (self.model_image_size[1], self.model_image_size[0]))
 
         print('{} model, anchors, and classes loaded.'.format(self.model_path))
+        
         # Picture frame set different colors (use when prient character images with recognised radicals)
         hsv_tuples = [(x / len(self.r_class_names), 1., 1.)
                       for x in range(len(self.r_class_names))]
         self.colors = list(map(lambda x: colorsys.hsv_to_rgb(*x), hsv_tuples))
         self.colors = list(map(lambda x: (int(x[0] * 255), int(x[1] * 255), int(x[2] * 255)), self.colors))
 
+
     # ---------------------------------------------------#
     #   detect images
     # ---------------------------------------------------#
     def detect_image(self, image):
-        image_shape = np.array(np.shape(image)[0:2])
-
         # ----------------------------------------------------------------#
         #   Add gray bars to the image to get undistorted resize
         # ----------------------------------------------------------------#
@@ -172,7 +172,6 @@ class RIE(object):
                 sp.append(conf_s)
                 sp_t = tuple(sp)
                 SP.append(sp_t)
-            # print("SP", SP)
 
             # -----------------------------------------------------------------------------------------#
             #   predict RPs. (Stack prediction boxes and then perform Non Maximal Suppression.)
@@ -196,7 +195,6 @@ class RIE(object):
                     rp_t = tuple(rp)
                     RP.append(rp_t)
                 RPs.append(RP)
-            # print("RPs", RPs)
         return RPs, SP, image
 
 
@@ -213,6 +211,8 @@ if __name__ == '__main__':
     input_path = "F:\oracle\REZCR-test\img/oc_02_1_0153_1_6.png"
     image = Image.open(input_path)
     model = RIE()
-    RPs, SP = model.detect_image(image)
+    RPs, SP, new_image = model.detect_image(image)
     print("RPs", RPs)
     print("SP", SP)
+
+    
